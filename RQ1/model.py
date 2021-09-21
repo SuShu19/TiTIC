@@ -22,7 +22,28 @@ class LSTM(nn.Module):
         out=torch.sigmoid(out)                      # make output in (0,1)
         return out
 
+# build LSTM
+class single_LSTM(nn.Module):
+    def __init__(self):
+        super(single_LSTM, self).__init__()
+        self.lstm=nn.LSTM(input_size=1,           # input_size=word'featureVectors=300
+                          hidden_size=256,          # hidden_size=256
+                          num_layers=1,             # num of running layer
+                          batch_first=True)         # input & output will has batch size as 1s dimension. e.g. (batch, time_step, input_size)
+        self.fc=nn.Linear(256,3)                    #full conntion
 
+    def forward(self,x):
+        # x shape (batch, time_step, input_size)
+        # out shape (batch, time_step, output_size)
+        # hidden shape (n_layers, batch, hidden_size)
+        # cell shape (n_layers, batch, hidden_size)
+        out,(hidden,cell)=self.lstm(x)
+        out=self.fc(out[:,-1,:])                    # use the last time_step to input full conntion
+        out=torch.sigmoid(out)                      # make output in (0,1)
+        return out
+
+    def generate_vec(self, x):
+        return self.lstm(x)
 
 # build LSTM
 class w2v_t2v_LSTM(nn.Module):

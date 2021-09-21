@@ -150,6 +150,57 @@ def t2v(file_path, repo, time_delt, epoch, lr, batch, text_d, time_dim):
     roc = {"repository": repo, "fpr": fpr.tolist(), "tpr": tpr.tolist()}
     return result, roc
 
+def lstm(file_path, repo, time_delt, epoch, lr, batch, text_d, time_dim):
+    train_data = pd.read_csv(file_path)
+    train_data['datetime'] = pd.to_datetime(train_data['datetime'])
+    train_data['timedelta'] = train_data['datetime'] - train_data['datetime'][0]
+    train_data['timedelta'] = train_data.timedelta.dt.days // time_delt
+    train_data = nag_sample_balance_data(train_data)      # 欠采样
+    train_data = train_data.sample(frac=1, random_state=1).reset_index(drop=True)
+
+    lstm = model.single_LSTM(time_dim)
+
+    optimizer = torch.optim.Adam(lstm.parameters(), lr=lr)  # optimize all cnn parameters
+    loss_func = nn.CrossEntropyLoss()  # loss function is CrossEntropyLoss
+
+    total_k = 10
+    for k in tqdm(range(total_k)):
+        X = train_data.timedelta.values
+        y = np.array(train_data['label'])
+        X_train, X_test, y_train, y_test = k_split(X, y, k, total_k)
+        X_test = torch.from_numpy(X_test).view(-1, 1, 1)
+        X_train = torch.from_numpy(np.array(X_train, dtype=np.float32)).view(-1, 1,1)
+        y_train = torch.from_numpy(np.array(y_train, dtype=np.int64)).view(-1, 1)
+
+        deal_traindata1 = TensorDataset(X_train, y_train)  # deal with wordVetor and label
+        load_train1 = torch.utils.data.DataLoader(dataset=deal_traindata1, batch_size=batch,
+                                                  shuffle=False)  # laod data make batch
+        for e in range(epoch):
+            for step, (x_time, label) in enumerate(load_train1):
+                label = label.view(-1)  # loss function need 1 dim! if don't do it, loss function will make error!
+                x_time = x_time.float()
+                output = lstm(x_time)
+                optimizer.zero_grad()  # clear gradients for this training step
+                loss = loss_func(output, label)
+                loss.backward()  # backpropagation, compute gradients
+                optimizer.step()  # apply gradients
+    X_test = X_test.float()
+    output_test = lstm(X_test)  # test model and print:loss and accuracy
+    pred_y = torch.max(output_test, 1)[1].data.numpy()
+    pred_y_np = output_test.detach().numpy()
+    true_y = np.zeros((len(y_test), 3), dtype=np.int)
+    for i in range(len(y_test)):
+        true_y[i][y_test[i]] = 1
+    fpr, tpr, _ = metrics.roc_curve(true_y.ravel(), pred_y_np.ravel())
+    roc_auc = metrics.auc(fpr, tpr)
+    print(metrics.classification_report(y_test, pred_y))
+    precision = metrics.precision_score(y_test, pred_y, average="macro")
+    recall = metrics.recall_score(y_test, pred_y, average="macro")
+    f1 = metrics.f1_score(y_test, pred_y, average="macro")
+    result = {"repository": repo, "precision": precision, "recall": recall, "f1": f1, "auc": roc_auc, "fpr": fpr, "tpr": tpr}
+    roc = {"repository": repo, "fpr": fpr.tolist(), "tpr": tpr.tolist()}
+    return result, roc
+
 
 def zeroR(file_path, repo, time_delt, epoch, lr, batch, text_d, time_dim):
     train_data = pd.read_csv(file_path)
@@ -206,6 +257,9 @@ def plot_roc():
     with jsonlines.open("./results/t2v_result_roc.jsonl", mode="r") as reader:
         for r in reader:
              roc_t2v = r
+    with jsonlines.open("./results/lstm_result_roc.jsonl", mode="r") as reader:
+        for r in reader:
+             roc_lstm = r
     with jsonlines.open("./results/zeroR_result_roc.jsonl", mode="r") as reader:
         for r in reader:
              roc_zeroR = r
@@ -220,10 +274,11 @@ def plot_roc():
 
 def main():
     result = pd.DataFrame(columns=["repository", "precision", "recall", "f1", "auc", "fpr", "tpr"])
+    result_lstm = pd.DataFrame(columns=["repository", "precision", "recall", "f1", "auc", "fpr", "tpr"])
     result_zeroR = pd.DataFrame(columns=["repository", "precision", "recall", "f1", "auc", "fpr", "tpr"])
     result_random = pd.DataFrame(columns=["repository", "precision", "recall", "f1", "auc", "fpr", "tpr"])
 
-    roc_t2v, roc_zeroR, roc_random = [], [], []
+    roc_t2v, roc_lstm, roc_zeroR, roc_random = [], [], [], []
 
     repo_list = file_opt.read_txt(config.code_path + "/resource/repo_list.txt")
     for repo in repo_list:
@@ -236,53 +291,64 @@ def main():
         time_d = 40
 
         result = result.append(t2v(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[0], ignore_index=True)
+        result_lstm = result.append(lstm(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[0], ignore_index=True)
         result_zeroR = result_zeroR.append(zeroR(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[0], ignore_index=True)
         result_random = result_random.append(random_guessing(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[0], ignore_index=True)
 
         roc_t2v.append(t2v(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[1])
+        roc_lstm.append(lstm(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[1])
         roc_zeroR.append(zeroR(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[1])
         roc_random.append(random_guessing(file_path, repo, time_delt, epoch, lr, batch, text_d, time_d)[1])
 
     result.to_csv("./results/t2v_result.csv")
+    result_lstm.to_csv("./results/lstm_result.csv")
     result_zeroR.to_csv("./results/zeroR_result.csv")
     result_random.to_csv("./results/random_result.csv")
 
 
     with jsonlines.open("./results/t2v_result_roc.jsonl", mode="w") as writer:
         writer.write(roc_t2v)
+    with jsonlines.open("./results/lstm_result_roc.jsonl", mode="w") as writer:
+        writer.write(roc_lstm)
     with jsonlines.open("./results/zeroR_result_roc.jsonl", mode="w") as writer:
         writer.write(roc_zeroR)
     with jsonlines.open("./results/random_result_roc.jsonl", mode="w") as writer:
         writer.write(roc_random)
 
 def plot_f1():
-    result = pd.read_csv("C:/Users/Administrator/Desktop/issue_classification/plot/rq1_data/t2v_result.csv")
-    result_zeroR = pd.read_csv("C:/Users/Administrator/Desktop/issue_classification/plot/rq1_data/zeroR_result.csv")
-    result_random = pd.read_csv("C:/Users/Administrator/Desktop/issue_classification/plot/rq1_data/random_result.csv")
+    result = pd.read_csv("./results/t2v_result.csv")
+    result_lstm = pd.read_csv("./results/lstm_result.csv")
+    result_zeroR = pd.read_csv("./results/zeroR_result.csv")
+    result_random = pd.read_csv("./results/random_result.csv")
 
     print(result["f1"].describe())
+    print(result_lstm["f1"].describe())
     print(result_zeroR["f1"].describe())
     print(result_random["f1"].describe())
 
-    df = pd.concat([result[["f1"]], result_zeroR[["f1"]], result_random[["f1"]]], axis=1)
-    df.columns = ["Time2Vec-LSTM", "ZeroR", "Random Guessing"]
+    df = pd.concat([result[["f1"]], result_lstm[["f1"]], result_zeroR[["f1"]], result_random[["f1"]]], axis=1)
+    df.columns = ["Time2Vec-LSTM","LSTM", "ZeroR", "Random Guessing"]
     plt.figure(figsize=[4,3])
-    df.boxplot(column=["Time2Vec-LSTM", "ZeroR", "Random Guessing"])
+    df.boxplot(column=["Time2Vec-LSTM", "LSTM", "ZeroR", "Random Guessing"])
     plt.show()
-    df_avg_f1 = pd.DataFrame(columns=["Time2Vec", "ZeroR", "Random Guessing"])
+    df_avg_f1 = pd.DataFrame(columns=["Time2Vec", "LSTM", "ZeroR", "Random Guessing"])
     df_avg_f1 = df_avg_f1.append({"Time2Vec": result["precision"].mean(),
+                                  "LSTM": result_lstm["precision"].mean(),
                                   "ZeroR": result_zeroR["precision"].mean(),
                                   "Random Guessing": result_random["precision"].mean()}
                                  ,ignore_index=True)
     df_avg_f1 = df_avg_f1.append({"Time2Vec": result["recall"].mean(),
+                                  "LSTM": result_lstm["recall"].mean(),
                                   "ZeroR": result_zeroR["recall"].mean(),
                                   "Random Guessing": result_random["recall"].mean()}
                                  ,ignore_index=True)
     df_avg_f1 = df_avg_f1.append({"Time2Vec": result["f1"].mean(),
+                                  "LSTM": result_lstm["f1"].mean(),
                                   "ZeroR": result_zeroR["f1"].mean(),
                                   "Random Guessing": result_random["f1"].mean()}
                                  ,ignore_index=True)
     df_avg_f1 = df_avg_f1.append({"Time2Vec": result["auc"].mean(),
+                                  "LSTM": result_lstm["auc"].mean(),
                                   "ZeroR": result_zeroR["auc"].mean(),
                                   "Random Guessing": result_random["auc"].mean()}
                                  ,ignore_index=True)
@@ -318,6 +384,6 @@ def plot_auc_box():
 
 if __name__ == '__main__':
     main()
-    plot_roc()
     plot_f1()
-    plot_auc_box()
+    # plot_roc()
+    # plot_auc_box()
